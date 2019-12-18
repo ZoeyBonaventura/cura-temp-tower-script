@@ -52,6 +52,15 @@ class TempTower(Script):
                     'unit': 'mm',
                     'type': 'float',
                     'default_value': 1.4
+                },
+                'layer_height': {
+                    'label': 'Layer Height ',
+                    'description': (
+                        'The height of each layer.'
+                    ),
+                    'unit': 'mm',
+                    'type': 'float',
+                    'default_value': 0.2
                 }
             }
         })
@@ -61,43 +70,57 @@ class TempTower(Script):
         height_inc = self.getSettingValueByKey('height_increment')
         temp_inc = self.getSettingValueByKey('temperature_increment')
         start_height = self.getSettingValueByKey('start_height')
+        layer_height = self.getSettingValueByKey('layer_height')
+
+        final_layer = self.finalLayer(data)
 
         cmd_re = re.compile(
             r'G[0-9]+ '
+            r'(?:F[0-9]+ )?'
             r'X[0-9]+\.?[0-9]* '
             r'Y[0-9]+\.?[0-9]* '
             r'Z(-?[0-9]+\.?[0-9]*)'
         )
 
+        layer_re = re.compile(r';LAYER:([0-9]+)')
+
         # Set initial state
         current_temp = 0
-        started = False
+
         for i, layer in enumerate(data):
-            lines = layer.split('\n')
-            for j, line in enumerate(lines):
-                # Before ;LAYER:0 arbitrary setup GCODE can be run.
-                if line == ';LAYER:0':
-                    started = True
-                    continue
+            layer_match = layer_re.match(layer)
 
-                # skip comments and startup lines
-                if line.startswith(';') or not started:
-                    continue
+            # We don't care about GCODE being run anywhere but on a layer
+            if layer_match is None:
+                continue
 
-                # Find any X,Y,Z Line (ex. G0 X60.989 Y60.989 Z1.77)
-                match = cmd_re.match(line)
-                if match is None:
-                    continue
-                z = float(match.groups()[0])
-				
-                if z < start_height:
-                    continue
-				
-                new_temp = start_temp + int((z - start_height) / height_inc) * temp_inc
+            current_layer = int(layer_match.groups()[0])
+            current_layer_height = current_layer * layer_height
 
-                if new_temp != current_temp:
-                    current_temp = new_temp
-                    lines[j] += '\n;TYPE:CUSTOM\nM104 S%d' % new_temp
-            data[i] = '\n'.join(lines)
+            if current_layer_height < start_height:
+                continue
+
+            new_temp = start_temp + int((current_layer_height - start_height) / height_inc) * temp_inc
+
+            if new_temp != current_temp:
+                current_temp = new_temp
+                insert_index = layer.find('\n')
+
+                data[i] = layer[:insert_index] + ('\n;TYPE:CUSTOM\nM104 S%d' % new_temp) + layer[insert_index:]
 
         return data
+
+    # Gets the final layer number for the print to keep from doing an extra temperature change at the end
+    def finalLayer(self, data):
+        final_layer = 0
+        layer_re = re.compile(r';LAYER:([0-9]+)')
+
+        for i, layer in enumerate(data):
+            layer_id = layer.split('\n', 1)[0]
+            match = layer_re.match(layer_id)
+
+            if match is not None:
+                layer_num = int(match.groups()[0])
+                final_layer = max(final_layer, layer_num)
+
+        return final_layer
